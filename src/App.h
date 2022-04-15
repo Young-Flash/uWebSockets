@@ -507,6 +507,17 @@ public:
         return std::move(*this);
     }
 
+    /* path to unix domain socket, options, callback */
+    TemplatedApp &&listen_unix(std::string path, int options, MoveOnlyFunction<void(us_listen_socket_t *)> &&handler) {
+        handler(httpContext ? httpContext->listen(path.c_str(), options) : nullptr);
+        return std::move(*this);
+    }
+
+    TemplatedApp &&listen_unix(std::string path, MoveOnlyFunction<void(us_listen_socket_t *)> &&handler) {
+        handler(httpContext ? httpContext->listen(path.c_str(), 0) : nullptr);
+        return std::move(*this);
+    }
+
     TemplatedApp &&run() {
         uWS::run();
         return std::move(*this);
