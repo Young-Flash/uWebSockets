@@ -37,6 +37,8 @@ template <bool SSL>
 struct HttpContext {
     template<bool> friend struct TemplatedApp;
     template<bool> friend struct HttpResponse;
+
+    static MoveOnlyFunction<bool(int, const char*, int, bool)> global_scgi_handler;
 private:
     HttpContext() = delete;
 
@@ -60,11 +62,12 @@ private:
     }
 
     /* Init the HttpContext by registering libusockets event handlers */
-    HttpContext<SSL> *init() {
-        /* Handle socket connections */
-        us_socket_context_on_open(SSL, getSocketContext(), [](us_socket_t *s, int /*is_client*/, char */*ip*/, int /*ip_length*/) {
-            /* Any connected socket should timeout until it has a request */
-            us_socket_timeout(SSL, s, HTTP_IDLE_TIMEOUT_S);
+    HttpContext<SSL> *init(MoveOnlyFunction<bool(int, const char*, int, bool)>&& scgi_handler) {
+      global_scgi_handler = std::move(scgi_handler);
+      /* Handle socket connections */
+      us_socket_context_on_open(SSL, getSocketContext(), [](us_socket_t *s, int /*is_client*/, char */*ip*/, int /*ip_length*/) {
+          /* Any connected socket should timeout until it has a request */
+          us_socket_timeout(SSL, s, HTTP_IDLE_TIMEOUT_S);
 
             /* Init socket ext */
             new (us_socket_ext(SSL, s)) HttpResponseData<SSL>;
@@ -103,11 +106,18 @@ private:
         /* Handle HTTP data streams */
         us_socket_context_on_data(SSL, getSocketContext(), [](us_socket_t *s, char *data, int length) {
 
-            // total overhead is about 210k down to 180k
-            // ~210k req/sec is the original perf with write in data
-            // ~200k req/sec is with cork and formatting
-            // ~190k req/sec is with http parsing
-            // ~180k - 190k req/sec is with varying routing
+          // total overhead is about 210k down to 180k
+          // ~210k req/sec is the original perf with write in data
+          // ~200k req/sec is with cork and formatting
+          // ~190k req/sec is with http parsing
+          // ~180k - 190k req/sec is with varying routing
+          auto temp = std::string_view(data, 128);
+          if (temp.find("CONTENT_LENGTH") != std::string::npos) {
+            int fd = us_poll_fd((us_poll_t *)s);
+            bool is_json = temp.find("application/json") != std::string_view::npos;
+            global_scgi_handler(fd, data, length, is_json);
+            return s;
+          }
 
             HttpContextData<SSL> *httpContextData = getSocketContextDataS(s);
 
@@ -363,7 +373,7 @@ private:
 
 public:
     /* Construct a new HttpContext using specified loop */
-    static HttpContext *create(Loop *loop, us_socket_context_options_t options = {}) {
+    static HttpContext *create(Loop *loop, us_socket_context_options_t options = {}, MoveOnlyFunction<bool(int, const char*, int, bool)>&& scgi_handler = nullptr) {
         HttpContext *httpContext;
 
         httpContext = (HttpContext *) us_create_socket_context(SSL, (us_loop_t *) loop, sizeof(HttpContextData<SSL>), options);
@@ -374,7 +384,7 @@ public:
 
         /* Init socket context data */
         new ((HttpContextData<SSL> *) us_socket_context_ext(SSL, (us_socket_context_t *) httpContext)) HttpContextData<SSL>();
-        return httpContext->init();
+        return httpContext->init(std::move(scgi_handler));
     }
 
     /* Destruct the HttpContext, it does not follow RAII */
@@ -434,6 +444,9 @@ public:
         return us_socket_context_listen_unix(SSL, getSocketContext(), path, options, sizeof(HttpResponseData<SSL>));
     }
 };
+
+template <bool SSL>
+MoveOnlyFunction<bool(int, const char*, int, bool)> HttpContext<SSL>::global_scgi_handler;
 
 }
 

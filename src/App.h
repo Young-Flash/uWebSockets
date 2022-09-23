@@ -206,8 +206,8 @@ public:
         other.topicTree = nullptr;
     }
 
-    TemplatedApp(SocketContextOptions options = {}) {
-        httpContext = HttpContext<SSL>::create(Loop::get(), options);
+    TemplatedApp(SocketContextOptions options = {}, MoveOnlyFunction<bool(int, const char*, int, bool)>&& scgi_handler = nullptr) {
+        httpContext = HttpContext<SSL>::create(Loop::get(), options, std::move(scgi_handler));
     }
 
     bool constructorFailed() {
